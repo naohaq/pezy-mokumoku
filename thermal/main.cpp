@@ -124,7 +124,6 @@ void calc_differential(CLenv_t & clenv, size_t num, SparseMatrix_t & mtx,
                        std::vector<FLOAT_t>& enths,
                        std::vector<int>& perm_fwd,
                        std::vector<int>& perm_rev,
-                       std::vector<FLOAT_t>& temps,
                        int nsteps)
 {
     try {
@@ -142,7 +141,6 @@ void calc_differential(CLenv_t & clenv, size_t num, SparseMatrix_t & mtx,
         auto kernel0 = cl::Kernel(program, "calcDiffuse");
         auto kernel1 = cl::Kernel(program, "calcBoundary");
         auto kernel2 = cl::Kernel(program, "enth2temp");
-        // auto kernel3 = cl::Kernel(program, "reorder");
         auto kernel4 = cl::Kernel(program, "extractrgb");
 
         // Get stack size modify function.
@@ -160,9 +158,8 @@ void calc_differential(CLenv_t & clenv, size_t num, SparseMatrix_t & mtx,
         auto device_rows     = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(FLOAT_t) * num * 8);
         auto device_enths    = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(FLOAT_t) * num);
         auto device_temps    = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(FLOAT_t) * num);
-        auto device_perm_fwd = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(int) * num);
+        // auto device_perm_fwd = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(int) * num);
         auto device_perm_rev = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(int) * num);
-        // auto device_temps_perm = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(FLOAT_t) * num);
         auto device_pixels   = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(uint8_t) * NX * NY * 3);
 
         // Send src.
@@ -170,7 +167,7 @@ void calc_differential(CLenv_t & clenv, size_t num, SparseMatrix_t & mtx,
         command_queue.enqueueWriteBuffer(device_idxs    , true, 0, sizeof(int) * num * 8, &(mtx.m_idxs[0]));
         command_queue.enqueueWriteBuffer(device_rows    , true, 0, sizeof(FLOAT_t) * num * 8, &(mtx.m_elems[0]));
         command_queue.enqueueWriteBuffer(device_enths   , true, 0, sizeof(FLOAT_t) * num, &enths[0]);
-        command_queue.enqueueWriteBuffer(device_perm_fwd, true, 0, sizeof(int) * num, &(perm_fwd[0]));
+        // command_queue.enqueueWriteBuffer(device_perm_fwd, true, 0, sizeof(int) * num, &(perm_fwd[0]));
         command_queue.enqueueWriteBuffer(device_perm_rev, true, 0, sizeof(int) * num, &(perm_rev[0]));
 
         // Set kernel args.
@@ -188,11 +185,6 @@ void calc_differential(CLenv_t & clenv, size_t num, SparseMatrix_t & mtx,
         kernel2.setArg(0, num);
         kernel2.setArg(1, device_temps);
         kernel2.setArg(2, device_enths);
-
-        // kernel3.setArg(0, num);
-        // kernel3.setArg(1, device_temps_perm);
-        // kernel3.setArg(2, device_temps);
-        // kernel3.setArg(3, device_perm_fwd);
 
         kernel4.setArg(0, (size_t)NX*NY);
         kernel4.setArg(1, (int)8);
@@ -229,7 +221,7 @@ void calc_differential(CLenv_t & clenv, size_t num, SparseMatrix_t & mtx,
         command_queue.enqueueReadBuffer(device_pixels, true, 0, sizeof(uint8_t) * NX*NY*3, &pixels[0]);
 
         for (int k=0; k<nsteps; k+=1) {
-            for (int i=0; i<64; i+=1) {
+            for (int i=0; i<96; i+=1) {
                 // Calculate diffusion
                 command_queue.enqueueNDRangeKernel(kernel0, cl::NullRange, cl::NDRange(global_work_size), cl::NullRange, nullptr, nullptr);
                 // Calculate boundary condition
@@ -272,7 +264,6 @@ int main(int argc, char** argv)
     std::cout << "num " << num << std::endl;
 
     std::vector<FLOAT_t> enths(num);
-    std::vector<FLOAT_t> temps(num);
 
     std::vector<int> rowptr(num+1);
     std::vector<int> idxs(num*7);
@@ -302,7 +293,7 @@ int main(int argc, char** argv)
     try {
         auto clenv = CLenv_t( );
 
-        calc_differential(clenv, num, mtx, enths, perm_c, perm_r, temps, 1024);
+        calc_differential(clenv, num, mtx, enths, perm_c, perm_r, 2048);
     } catch (const cl::Error& e) {
         std::stringstream msg;
         msg << "CL Error : " << e.what() << " " << e.err();

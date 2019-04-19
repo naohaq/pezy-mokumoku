@@ -30,3 +30,9 @@
 *.exe
 *.out
 *.app
+
+pzcl.log
+thermal/pzcThermal
+thermal/kernel/kernel.pz
+thermal/kernel/obj/
+
