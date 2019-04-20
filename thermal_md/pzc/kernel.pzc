@@ -1,0 +1,303 @@
+// -*- mode: c++ -*-
+/*!
+ * @author    Naoyuki MORITA
+ * @date      2019
+ * @copyright BSD-3-Clause
+ */
+
+#include <pzc_builtin.h>
+
+#include "../sim_conf.hh"
+
+inline void sync_pe()
+{
+    __builtin_pz_sync_lv(1);
+}
+
+inline FLOAT_t enthalpy_to_temp(FLOAT_t enth)
+{
+    const FLOAT_t e1 = T_melt * Cv_SUS304;
+    const FLOAT_t e2 = e1 + H_melt;
+    FLOAT_t temp = 0.0;
+
+    if (enth < e1) {
+        temp = enth / Cv_SUS304;
+    }
+    else if (enth < e2) {
+        temp = T_melt;
+    }
+    else {
+        temp = T_melt + (enth - e2) / Cv_SUS304;
+    }
+
+    return temp;
+}
+
+inline FLOAT_t
+clamp(FLOAT_t x)
+{
+    FLOAT_t y;
+    if (x < 0.0) {
+        y = 0.0;
+    }
+    else if (x > 1.0) {
+        y = 1.0;
+    }
+    else {
+        y = x;
+    }
+    return y;
+}
+
+void
+hsv2rgb(FLOAT_t h, FLOAT_t s, FLOAT_t v, FLOAT_t & r, FLOAT_t & g, FLOAT_t & b)
+{
+    FLOAT_t hc = clamp(h);
+    FLOAT_t sc = clamp(s);
+    FLOAT_t vc = clamp(v);
+    if (sc > 0.0) {
+        FLOAT_t hh = hc * 6.0;
+        int     hi = ((int)floor(hh)) % 6;
+        FLOAT_t hf = (1.0 - cos((hh - (FLOAT_t)hi) * 3.141592653589793))*0.5;
+        FLOAT_t m  = vc * (1.0 - sc);
+        FLOAT_t n  = vc * (1.0 - sc * hf);
+        FLOAT_t k  = vc * (1.0 - sc * (1.0 - hf));
+
+        switch (hi) {
+        case 0: r = vc; g = k;  b = m;  break;
+        case 1: r = n;  g = vc; b = m;  break;
+        case 2: r = m;  g = vc; b = k;  break;
+        case 3: r = m;  g = n;  b = vc; break;
+        case 4: r = k;  g = m;  b = vc; break;
+        case 5: r = vc; g = m;  b = n;  break;
+        }
+    }
+    else {
+        r = vc;
+        g = vc;
+        b = vc;
+    }
+}
+
+void
+temp2rgb(FLOAT_t t, uchar & r, uchar & g, uchar & b)
+{
+    const FLOAT_t c = 2.0/3.0;
+    FLOAT_t rf = 0.0;
+    FLOAT_t gf = 0.0;
+    FLOAT_t bf = 0.0;
+    const FLOAT_t t0 = 20.0;
+    const FLOAT_t t1 = 1400.0;
+    const FLOAT_t t2 = 3000.0;
+
+    if (t < t0) {
+        hsv2rgb(c, 1.0, 1.0, rf, gf, bf);
+    }
+    else if (t < t1) {
+        FLOAT_t h = c - ((t - t0)/(t1 - t0))*c;
+        hsv2rgb(h, 1.0, 1.0, rf, gf, bf);
+    }
+    else if (t < t2) {
+        FLOAT_t s = 1.0 - (t - t1) / (t2 - t1);
+        hsv2rgb(0.0, s, 1.0, rf, gf, bf);
+    }
+    else {
+        rf = 1.0;
+        gf = 1.0;
+        bf = 1.0;
+    }
+
+    r = (uchar)floor(rf*255.0);
+    g = (uchar)floor(gf*255.0);
+    b = (uchar)floor(bf*255.0);
+}
+
+inline void
+enth2rgb(FLOAT_t u, uchar & r, uchar & g, uchar & b)
+{
+    const FLOAT_t e1 = T_melt * Cv_SUS304;
+    const FLOAT_t e2 = e1 + H_melt;
+    FLOAT_t t = enthalpy_to_temp(u) - 273.15;
+
+    int s = 128;
+    if (e1 < u && u <= e2) {
+        s = 204;
+    }
+    else if (e2 < u) {
+        s = 256;
+    }
+
+    uchar r_tmp;
+    uchar g_tmp;
+    uchar b_tmp;
+    temp2rgb(t, r_tmp, g_tmp, b_tmp);
+
+    r = (uchar)(((int)r_tmp * s) >> 8);
+    g = (uchar)(((int)g_tmp * s) >> 8);
+    b = (uchar)(((int)b_tmp * s) >> 8);
+}
+
+
+inline int
+get_current_row(int num, const int * rowptr, int row, int idx)
+{
+    while (row < num && rowptr[row+1] <= idx) {
+        row += 1;
+    }
+    return row;
+}
+
+void pzc_calcDiffuse(size_t        num,
+                     FLOAT_t*       enths,
+                     const FLOAT_t* temps,
+                     const int*    rowptr,
+                     const int*    idxs,
+                     const FLOAT_t* elems)
+{
+    size_t       pid    = get_pid();
+    size_t       tid    = get_tid();
+    size_t       gid    = pid * get_maxtid() + tid;
+    const size_t GLOBAL_WORK_SIZE = get_maxtid() * get_maxpid();
+
+    void *   local_mem = (void*)get_local_mem_addr();
+    FLOAT_t * local_dst0 = ((FLOAT_t*)local_mem) + tid;
+    FLOAT_t * local_dst1 = ((FLOAT_t*)local_mem) + tid * get_maxtid( );
+
+    for (size_t i = pid * get_maxtid( ); i < num; i += GLOBAL_WORK_SIZE) {
+        int cur_row = i;
+        int cur_idx = rowptr[cur_row] + tid;
+        int row_ofs;
+
+        for (size_t j = 0; j < get_maxtid( ); j += 1) {
+            local_dst1[j] = 0.0;
+            chgthread( );
+        }
+        sync_pe( );
+
+        cur_row = get_current_row(num, rowptr, cur_row, cur_idx);
+        row_ofs = cur_row - i;
+        chgthread( );
+        while (cur_row < num && cur_row < i + get_maxtid( )) {
+            int c = idxs[cur_idx];
+            FLOAT_t e = elems[cur_idx];
+            chgthread( );
+            FLOAT_t v = temps[c];
+            chgthread( );
+            local_dst1[row_ofs] += e * v;
+            chgthread( );
+
+            cur_idx += get_maxtid( );
+            cur_row = get_current_row(num, rowptr, cur_row, cur_idx);
+            row_ofs = cur_row - i;
+            chgthread( );
+        }
+        sync_pe( );
+
+        FLOAT_t sum = 0.0;
+        for (int j = 0; j < get_maxtid( ); j += 1) {
+            sum += local_dst0[j*get_maxtid( )];
+            chgthread( );
+        }
+        enths[i + tid] += sum;
+        sync_pe( );
+    }
+
+    flush();
+}
+
+void pzc_calcBoundary(size_t num, FLOAT_t* enths, int* perm_rev)
+{
+    size_t pid = get_pid( );
+    size_t tid = get_tid( );
+    size_t gid = pid * get_maxtid( ) + tid;
+    const size_t GLOBAL_WORK_SIZE = get_maxtid() * get_maxpid();
+
+    for (size_t i = gid; i < num; i += GLOBAL_WORK_SIZE) {
+        int z = i % NZ;
+        int x = i / NZ;
+
+        if (x >= 96 && x < 144) {
+            int idx = crd2idx(x, NY-1, z);
+            int idx_p = perm_rev[idx];
+            FLOAT_t e = enths[idx_p];
+            chgthread();
+
+            FLOAT_t dTemp = enthalpy_to_temp(e);
+            e += s_ry * (T_low - dTemp) * Cv_SUS304;
+
+            enths[idx_p] = e;
+        }
+    }
+
+    flush();
+}
+
+void pzc_reorder(size_t num, FLOAT_t* dst, FLOAT_t* src, int* perm)
+{
+    size_t pid = get_pid( );
+    size_t tid = get_tid( );
+    size_t gid = pid * get_maxtid( ) + tid;
+    const size_t GLOBAL_WORK_SIZE = get_maxtid() * get_maxpid();
+
+    for (size_t i = gid; i < num; i += GLOBAL_WORK_SIZE) {
+        int k = perm[i];
+        FLOAT_t v = src[i];
+        dst[k] = v;
+        chgthread();
+    }
+
+    flush();
+}
+
+void pzc_enth2temp(size_t        num,
+                   FLOAT_t*       temps,
+                   const FLOAT_t* enths)
+{
+    size_t       pid              = get_pid();
+    size_t       tid              = get_tid();
+    size_t       gid              = pid * get_maxtid() + tid;
+    const size_t GLOBAL_WORK_SIZE = get_maxtid() * get_maxpid();
+
+    for (size_t i = gid; i < num; i += GLOBAL_WORK_SIZE) {
+        temps[i] = enthalpy_to_temp(enths[i]);
+    }
+
+    flush();
+}
+
+void pzc_extractrgb(size_t num,
+                    int z,
+                    uchar* pixels,
+                    const FLOAT_t* enths,
+                    const int* perm_rev)
+{
+    size_t       pid              = get_pid();
+    size_t       tid              = get_tid();
+    size_t       gid              = pid * get_maxtid() + tid;
+    const size_t GLOBAL_WORK_SIZE = get_maxtid() * get_maxpid();
+
+    for (size_t i = gid; i < num; i += GLOBAL_WORK_SIZE) {
+        int x = i % NX;
+        int y = i / NX;
+
+        int idx = crd2idx(x, y, z);
+        int idx_p = perm_rev[idx];
+        FLOAT_t u = enths[idx_p];
+        chgthread();
+
+        uchar r;
+        uchar g;
+        uchar b;
+        enth2rgb(u, r, g, b);
+
+        pixels[i*3 + 0] = r;
+        pixels[i*3 + 1] = g;
+        pixels[i*3 + 2] = b;
+    }
+
+    flush();
+}
+
+// Local Variables:
+// indent-tabs-mode: nil
+// End:
