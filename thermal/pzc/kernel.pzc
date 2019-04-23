@@ -216,7 +216,7 @@ void pzc_calcBoundary(size_t num, FLOAT_t* enths, int* perm_rev)
         int z = i % NZ;
         int x = i / NZ;
 
-        if (x >= 96 && x < 144) {
+        if (x >= 96 && x < 160) {
             int idx = crd2idx(x, NY-1, z);
             int idx_p = perm_rev[idx];
             FLOAT_t e = enths[idx_p];
