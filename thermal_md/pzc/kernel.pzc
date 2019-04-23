@@ -148,6 +148,7 @@ get_current_row(int num, const int * rowptr, int row, int idx)
 }
 
 void pzc_calcDiffuse(size_t        num,
+                     size_t        offs,
                      FLOAT_t*       enths,
                      const FLOAT_t* temps,
                      const int*    rowptr,
@@ -198,7 +199,7 @@ void pzc_calcDiffuse(size_t        num,
             sum += local_dst0[j*get_maxtid( )];
             chgthread( );
         }
-        enths[i + tid] += sum;
+        enths[i + offs + tid] += sum;
         sync_pe( );
     }
 
@@ -216,7 +217,7 @@ void pzc_calcBoundary(size_t num, FLOAT_t* enths, int* perm_rev)
         int z = i % NZ;
         int x = i / NZ;
 
-        if (x >= 96 && x < 144) {
+        if (x >= 96 && x < 160) {
             int idx = crd2idx(x, NY-1, z);
             int idx_p = perm_rev[idx];
             FLOAT_t e = enths[idx_p];

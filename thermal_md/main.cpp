@@ -26,31 +26,36 @@ class CLenv_t {
 private:
     std::vector<cl::Platform> m_platforms;
     std::vector<cl::Device> m_devices;
-    cl::Context m_context;
-    cl::CommandQueue m_command_queue;
+    std::vector<cl::Context> m_contexts;
+    std::vector<cl::CommandQueue> m_command_queues;
 
 public:
     CLenv_t( void ) {
         cl::Platform::get(&m_platforms);
-        m_platforms[0].getDevices(CL_DEVICE_TYPE_DEFAULT, &m_devices);
-        m_context = cl::Context(m_devices[0]);
-        m_command_queue = cl::CommandQueue(m_context, m_devices[0], 0);
-    }
-
-    inline cl::Context & context( void ) {
-        return m_context;
-    }
-
-    inline cl::CommandQueue & command_queue( void ) {
-        return m_command_queue;
+        m_platforms[0].getDevices(CL_DEVICE_TYPE_ALL, &m_devices);
+        std::cout << m_devices.size() << " devices." << std::endl;
+        for (int i=0; i<2; i+=1) {
+            auto context = cl::Context(m_devices[i]);
+            auto queue_ = cl::CommandQueue(context, m_devices[i]);
+            m_contexts.push_back(std::move(context));
+            m_command_queues.push_back(std::move(queue_));
+        }
     }
 
     inline cl::Platform & platform( void ) {
         return m_platforms[0];
     }
 
-    inline cl::Device & device( void ) {
-        return m_devices[0];
+    inline cl::Context & context(int idx = 0) {
+        return m_contexts[idx];
+    }
+
+    inline cl::CommandQueue & command_queue(int idx = 0) {
+        return m_command_queues[idx];
+    }
+
+    inline cl::Device & device(int idx = 0) {
+        return m_devices[idx];
     }
 };
 
@@ -120,7 +125,9 @@ output_temperature(int k, const std::vector<uint8_t>& pixels)
     file.close( );
 }
 
-void calc_differential(CLenv_t & clenv, size_t num, SparseMatrix_t & mtx,
+void calc_differential(CLenv_t & clenv, size_t num,
+                       SparseMatrix_t & mtx0,
+                       SparseMatrix_t & mtx1,
                        std::vector<FLOAT_t>& enths,
                        std::vector<int>& perm_fwd,
                        std::vector<int>& perm_rev,
@@ -128,20 +135,41 @@ void calc_differential(CLenv_t & clenv, size_t num, SparseMatrix_t & mtx,
 {
     try {
         std::vector<uint8_t> pixels(NX*NY*3);
-        auto & context = clenv.context( );
-        auto & device = clenv.device( );
-        auto & command_queue = clenv.command_queue( );
+        std::vector<cl::Kernel> kernels0;
+        std::vector<cl::Kernel> kernels1;
+        auto & context0 = clenv.context(0);
+        auto & device0 = clenv.device(0);
+        auto & queue0 = clenv.command_queue(0);
+        auto & context1 = clenv.context(1);
+        auto & device1 = clenv.device(1);
+        auto & queue1 = clenv.command_queue(1);
 
         // Create Program.
         // Load compiled binary file and create cl::Program object.
-        auto program = createProgram(clenv.context( ), clenv.device( ), "kernel/kernel.pz");
+        auto program0 = createProgram(context0, device0, "kernel/kernel.pz");
+        auto program1 = createProgram(context1, device1, "kernel/kernel.pz");
 
         // Create Kernel.
         // Give kernel name without pzc_ prefix.
-        auto kernel0 = cl::Kernel(program, "calcDiffuse");
-        auto kernel1 = cl::Kernel(program, "calcBoundary");
-        auto kernel2 = cl::Kernel(program, "enth2temp");
-        auto kernel4 = cl::Kernel(program, "extractrgb");
+        {
+            auto kernel0 = cl::Kernel(program0, "calcDiffuse");
+            auto kernel1 = cl::Kernel(program0, "calcBoundary");
+            auto kernel2 = cl::Kernel(program0, "enth2temp");
+            auto kernel3 = cl::Kernel(program0, "extractrgb");
+            kernels0.push_back(std::move(kernel0));
+            kernels0.push_back(std::move(kernel1));
+            kernels0.push_back(std::move(kernel2));
+            kernels0.push_back(std::move(kernel3));
+        }
+
+        {
+            auto kernel0 = cl::Kernel(program1, "calcDiffuse");
+            auto kernel1 = cl::Kernel(program1, "calcBoundary");
+            auto kernel2 = cl::Kernel(program1, "enth2temp");
+            kernels1.push_back(std::move(kernel0));
+            kernels1.push_back(std::move(kernel1));
+            kernels1.push_back(std::move(kernel2));
+        }
 
         // Get stack size modify function.
         typedef CL_API_ENTRY cl_int(CL_API_CALL * pfnPezyExtSetPerThreadStackSize)(cl_kernel kernel, size_t size);
@@ -150,97 +178,154 @@ void calc_differential(CLenv_t & clenv, size_t num, SparseMatrix_t & mtx,
             throw "pezy_set_per_thread_stack_size not found";
         }
         size_t stack_size_per_thread = 1024;
-        clExtSetPerThreadStackSize(kernel0(), stack_size_per_thread);
+        clExtSetPerThreadStackSize(kernels0[0](), stack_size_per_thread);
+        clExtSetPerThreadStackSize(kernels1[0](), stack_size_per_thread);
 
         // Create Buffers.
-        auto device_rowptr   = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(int) * (num+1));
-        auto device_idxs     = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(int) * num * 8);
-        auto device_rows     = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(FLOAT_t) * num * 8);
-        auto device_enths    = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(FLOAT_t) * num);
-        auto device_temps    = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(FLOAT_t) * num);
+        auto device_rowptr0  = cl::Buffer(context0, CL_MEM_READ_WRITE, sizeof(int) * (num/2+1));
+        auto device_rowptr1  = cl::Buffer(context1, CL_MEM_READ_WRITE, sizeof(int) * (num/2+1));
+        auto device_idxs0    = cl::Buffer(context0, CL_MEM_READ_WRITE, sizeof(int) * num * 7);
+        auto device_idxs1    = cl::Buffer(context1, CL_MEM_READ_WRITE, sizeof(int) * num * 7);
+        auto device_rows0    = cl::Buffer(context0, CL_MEM_READ_WRITE, sizeof(FLOAT_t) * num * 7);
+        auto device_rows1    = cl::Buffer(context1, CL_MEM_READ_WRITE, sizeof(FLOAT_t) * num * 7);
+        auto device_enths0   = cl::Buffer(context0, CL_MEM_READ_WRITE, sizeof(FLOAT_t) * num);
+        auto device_enths1   = cl::Buffer(context1, CL_MEM_READ_WRITE, sizeof(FLOAT_t) * num);
+        auto device_temps0   = cl::Buffer(context0, CL_MEM_READ_WRITE, sizeof(FLOAT_t) * num);
+        auto device_temps1   = cl::Buffer(context1, CL_MEM_READ_WRITE, sizeof(FLOAT_t) * num);
         // auto device_perm_fwd = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(int) * num);
-        auto device_perm_rev = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(int) * num);
-        auto device_pixels   = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(uint8_t) * NX * NY * 3);
+        auto device_perm_rev0 = cl::Buffer(context0, CL_MEM_READ_WRITE, sizeof(int) * num);
+        auto device_perm_rev1 = cl::Buffer(context1, CL_MEM_READ_WRITE, sizeof(int) * num);
+        auto device_pixels   = cl::Buffer(context0, CL_MEM_READ_WRITE, sizeof(uint8_t) * NX * NY * 3);
 
         // Send src.
-        command_queue.enqueueWriteBuffer(device_rowptr  , true, 0, sizeof(int) * (num + 1), &(mtx.m_rowptr[0]));
-        command_queue.enqueueWriteBuffer(device_idxs    , true, 0, sizeof(int) * num * 8, &(mtx.m_idxs[0]));
-        command_queue.enqueueWriteBuffer(device_rows    , true, 0, sizeof(FLOAT_t) * num * 8, &(mtx.m_elems[0]));
-        command_queue.enqueueWriteBuffer(device_enths   , true, 0, sizeof(FLOAT_t) * num, &enths[0]);
-        // command_queue.enqueueWriteBuffer(device_perm_fwd, true, 0, sizeof(int) * num, &(perm_fwd[0]));
-        command_queue.enqueueWriteBuffer(device_perm_rev, true, 0, sizeof(int) * num, &(perm_rev[0]));
+        queue0.enqueueWriteBuffer(device_rowptr0 , false, 0, sizeof(int) * ((num/2) + 1), &(mtx0.m_rowptr[0]));
+        queue1.enqueueWriteBuffer(device_rowptr1 , false, 0, sizeof(int) * ((num/2) + 1), &(mtx1.m_rowptr[0]));
+        queue0.enqueueWriteBuffer(device_idxs0   , false, 0, sizeof(int) * (num/2) * 7, &(mtx0.m_idxs[0]));
+        queue1.enqueueWriteBuffer(device_idxs1   , false, 0, sizeof(int) * (num/2) * 7, &(mtx1.m_idxs[0]));
+        queue0.enqueueWriteBuffer(device_rows0   , false, 0, sizeof(FLOAT_t) * (num/2) * 7, &(mtx0.m_elems[0]));
+        queue1.enqueueWriteBuffer(device_rows1   , false, 0, sizeof(FLOAT_t) * (num/2) * 7, &(mtx1.m_elems[0]));
+        queue0.enqueueWriteBuffer(device_enths0  , false, 0, sizeof(FLOAT_t) * num, &enths[0]);
+        queue1.enqueueWriteBuffer(device_enths1  , false, 0, sizeof(FLOAT_t) * num, &enths[0]);
+        // queue0.enqueueWriteBuffer(device_perm_fwd, true, 0, sizeof(int) * num, &(perm_fwd[0]));
+        queue0.enqueueWriteBuffer(device_perm_rev0, true, 0, sizeof(int) * num, &(perm_rev[0]));
+        queue1.enqueueWriteBuffer(device_perm_rev1, true, 0, sizeof(int) * num, &(perm_rev[0]));
 
         // Set kernel args.
-        kernel0.setArg(0, num);
-        kernel0.setArg(1, device_enths);
-        kernel0.setArg(2, device_temps);
-        kernel0.setArg(3, device_rowptr);
-        kernel0.setArg(4, device_idxs);
-        kernel0.setArg(5, device_rows);
+        kernels0[0].setArg(0, num/2);
+        kernels0[0].setArg(1, (size_t)0);
+        kernels0[0].setArg(2, device_enths0);
+        kernels0[0].setArg(3, device_temps0);
+        kernels0[0].setArg(4, device_rowptr0);
+        kernels0[0].setArg(5, device_idxs0);
+        kernels0[0].setArg(6, device_rows0);
 
-        kernel1.setArg(0, (size_t)NX*NZ);
-        kernel1.setArg(1, device_enths);
-        kernel1.setArg(2, device_perm_rev);
+        kernels0[1].setArg(0, (size_t)NX*NZ);
+        kernels0[1].setArg(1, device_enths0);
+        kernels0[1].setArg(2, device_perm_rev0);
 
-        kernel2.setArg(0, num);
-        kernel2.setArg(1, device_temps);
-        kernel2.setArg(2, device_enths);
+        kernels0[2].setArg(0, num);
+        kernels0[2].setArg(1, device_temps0);
+        kernels0[2].setArg(2, device_enths0);
 
-        kernel4.setArg(0, (size_t)NX*NY);
-        kernel4.setArg(1, (int)8);
-        kernel4.setArg(2, device_pixels);
-        kernel4.setArg(3, device_enths);
-        kernel4.setArg(4, device_perm_rev);
+        kernels0[3].setArg(0, (size_t)NX*NY);
+        kernels0[3].setArg(1, (int)8);
+        kernels0[3].setArg(2, device_pixels);
+        kernels0[3].setArg(3, device_enths0);
+        kernels0[3].setArg(4, device_perm_rev0);
+
+        kernels1[0].setArg(0, num/2);
+        kernels1[0].setArg(1, num/2);
+        kernels1[0].setArg(2, device_enths1);
+        kernels1[0].setArg(3, device_temps1);
+        kernels1[0].setArg(4, device_rowptr1);
+        kernels1[0].setArg(5, device_idxs1);
+        kernels1[0].setArg(6, device_rows1);
+
+        kernels1[1].setArg(0, (size_t)NX*NZ);
+        kernels1[1].setArg(1, device_enths1);
+        kernels1[1].setArg(2, device_perm_rev1);
+
+        kernels1[2].setArg(0, num);
+        kernels1[2].setArg(1, device_temps1);
+        kernels1[2].setArg(2, device_enths1);
 
         // Get workitem size.
         // sc1-64: 8192  (1024 PEs * 8 threads)
         // sc2   : 15782 (1984 PEs * 8 threads)
         size_t global_work_size = 0;
-        {
+        for (int i=0; i<2; i+=1) {
+            auto & dev_tmp = clenv.device(i);
             std::string device_name;
-            device.getInfo(CL_DEVICE_NAME, &device_name);
+            dev_tmp.getInfo(CL_DEVICE_NAME, &device_name);
 
             size_t global_work_size_[3] = { 0 };
-            device.getInfo(CL_DEVICE_MAX_WORK_ITEM_SIZES, &global_work_size_);
+            dev_tmp.getInfo(CL_DEVICE_MAX_WORK_ITEM_SIZES, &global_work_size_);
 
             global_work_size = global_work_size_[0];
             if (device_name.find("PEZY-SC2") != std::string::npos) {
                 global_work_size = std::min(global_work_size, (size_t)15872);
             }
 
-            std::cout << "Use device : " << device_name << std::endl;
-            std::cout << "workitem   : " << global_work_size << std::endl;
+            std::cout << "Use device :" << i << ": " << device_name << std::endl;
+            std::cout << "workitem   :" << i << ": " << global_work_size << std::endl;
         }
 
         // Run device kernel.
         // Enthalpy to temperature
-        command_queue.enqueueNDRangeKernel(kernel2, cl::NullRange, cl::NDRange(global_work_size), cl::NullRange, nullptr, nullptr);
+        queue0.enqueueNDRangeKernel(kernels0[2], cl::NullRange, cl::NDRange(global_work_size), cl::NullRange, nullptr, nullptr);
+        queue1.enqueueNDRangeKernel(kernels1[2], cl::NullRange, cl::NDRange(global_work_size), cl::NullRange, nullptr, nullptr);
         // Convert enthalpy to RGB
-        command_queue.enqueueNDRangeKernel(kernel4, cl::NullRange, cl::NDRange(global_work_size), cl::NullRange, nullptr, nullptr);
+        queue0.enqueueNDRangeKernel(kernels0[3], cl::NullRange, cl::NDRange(global_work_size), cl::NullRange, nullptr, nullptr);
         // Get temperature.
-        command_queue.enqueueReadBuffer(device_pixels, true, 0, sizeof(uint8_t) * NX*NY*3, &pixels[0]);
+        queue0.enqueueReadBuffer(device_pixels, true, 0, sizeof(uint8_t) * NX*NY*3, &pixels[0]);
+
+        int ofs0 = mtx0.border_min;
+        int len0 = mtx0.border_max - ofs0 + 1;
+        int ofs1 = mtx1.border_min;
+        int len1 = mtx1.border_max - ofs1 + 1;
 
         for (int k=0; k<nsteps; k+=1) {
             for (int i=0; i<96; i+=1) {
+                cl::Event ev0;
+                cl::Event ev1;
                 // Calculate diffusion
-                command_queue.enqueueNDRangeKernel(kernel0, cl::NullRange, cl::NDRange(global_work_size), cl::NullRange, nullptr, nullptr);
+                queue0.enqueueNDRangeKernel(kernels0[0], cl::NullRange, cl::NDRange(global_work_size), cl::NullRange, nullptr, nullptr);
+                queue1.enqueueNDRangeKernel(kernels1[0], cl::NullRange, cl::NDRange(global_work_size), cl::NullRange, nullptr, nullptr);
+
+                // Distribute result
+                queue0.enqueueReadBuffer(device_enths0, false, sizeof(FLOAT_t)*ofs1, sizeof(FLOAT_t)*len1, &(enths[ofs1]), nullptr, &ev0);
+                queue1.enqueueReadBuffer(device_enths1, false, sizeof(FLOAT_t)*ofs0, sizeof(FLOAT_t)*len0, &(enths[ofs0]), nullptr, &ev1);
+
+                ev0.wait( );
+                ev1.wait( );
+
+                queue0.enqueueWriteBuffer(device_enths0, false, sizeof(FLOAT_t)*ofs0, sizeof(FLOAT_t)*len0, &(enths[ofs0]));
+                queue1.enqueueWriteBuffer(device_enths1, false, sizeof(FLOAT_t)*ofs1, sizeof(FLOAT_t)*len1, &(enths[ofs1]));
+
                 // Calculate boundary condition
-                command_queue.enqueueNDRangeKernel(kernel1, cl::NullRange, cl::NDRange(global_work_size), cl::NullRange, nullptr, nullptr);
+                queue0.enqueueNDRangeKernel(kernels0[1], cl::NullRange, cl::NDRange(global_work_size), cl::NullRange, nullptr, nullptr);
+                queue1.enqueueNDRangeKernel(kernels1[1], cl::NullRange, cl::NDRange(global_work_size), cl::NullRange, nullptr, nullptr);
+
                 // Enthalpy to temperature
-                command_queue.enqueueNDRangeKernel(kernel2, cl::NullRange, cl::NDRange(global_work_size), cl::NullRange, nullptr, nullptr);
+                queue0.enqueueNDRangeKernel(kernels0[2], cl::NullRange, cl::NDRange(global_work_size), cl::NullRange, nullptr, nullptr);
+                queue1.enqueueNDRangeKernel(kernels1[2], cl::NullRange, cl::NDRange(global_work_size), cl::NullRange, nullptr, nullptr);
             }
 
+            // Aggregate result
+            queue1.enqueueReadBuffer(device_enths1, true, sizeof(FLOAT_t)*(num/2), sizeof(FLOAT_t)*(num/2), &(enths[num/2]));
+            queue0.enqueueWriteBuffer(device_enths0, false, sizeof(FLOAT_t)*(num/2), sizeof(FLOAT_t)*(num/2), &(enths[num/2]));
+
             // Convert enthalpy to RGB
-            command_queue.enqueueNDRangeKernel(kernel4, cl::NullRange, cl::NDRange(global_work_size), cl::NullRange, nullptr, nullptr);
+            queue0.enqueueNDRangeKernel(kernels0[3], cl::NullRange, cl::NDRange(global_work_size), cl::NullRange, nullptr, nullptr);
             output_temperature(k, pixels);
 
             // Get temperature.
-            command_queue.enqueueReadBuffer(device_pixels, true, 0, sizeof(uint8_t) * NX*NY*3, &pixels[0]);
+            queue0.enqueueReadBuffer(device_pixels, true, 0, sizeof(uint8_t) * NX*NY*3, &pixels[0]);
         }
 
         // Finish all commands.
-        command_queue.flush();
-        command_queue.finish();
+        queue0.flush();
+        queue0.finish();
 
         output_temperature(nsteps, pixels);
 
@@ -265,16 +350,25 @@ int main(int argc, char** argv)
 
     std::vector<FLOAT_t> enths(num);
 
-    std::vector<int> rowptr(num+1);
-    std::vector<int> idxs(num*7);
-    std::vector<FLOAT_t> rows(num*7);
+    std::vector<int>     rowptr0(num/2+1);
+    std::vector<int>     idxs0((num/2)*7);
+    std::vector<FLOAT_t> rows0((num/2)*7);
+    std::vector<int>     rowptr1(num/2+1);
+    std::vector<int>     idxs1((num/2)*7);
+    std::vector<FLOAT_t> rows1((num/2)*7);
 
     std::vector<int> perm_c(num, 0);
     std::vector<int> perm_r(num, 0);
 
-    auto mtx = SparseMatrix_t(rowptr, idxs, rows);
+    auto mtx0 = SparseMatrix_t(rowptr0, idxs0, rows0);
+    auto mtx1 = SparseMatrix_t(rowptr1, idxs1, rows1);
 
     {
+        std::vector<int> rowptr_(num+1);
+        std::vector<int> idxs_(num*7);
+        std::vector<FLOAT_t> rows_(num*7);
+        auto mtx_ = SparseMatrix_t(rowptr_, idxs_, rows_);
+
         std::vector<int> tmp_rowptr(num+1);
         std::vector<int> tmp_idxs(num*7);
         std::vector<FLOAT_t> tmp_rows(num*7);
@@ -282,8 +376,14 @@ int main(int argc, char** argv)
 
         init_differential_matrix(tmp_mtx);
 
-        matrix_reorder_CuthillMckee(mtx, tmp_mtx, perm_c, perm_r);
+        matrix_reorder_CuthillMckee(mtx_, tmp_mtx, perm_c, perm_r);
+
+        split_matrix(mtx0, mtx1, mtx_);
+        std::cout << "Border 0: " << mtx0.border_min << " - " << mtx0.border_max << std::endl;
+        std::cout << "Border 1: " << mtx1.border_min << " - " << mtx1.border_max << std::endl;
     }
+
+    std::cout.flush( );
 
     init_state(enths);
 
@@ -293,7 +393,7 @@ int main(int argc, char** argv)
     try {
         auto clenv = CLenv_t( );
 
-        calc_differential(clenv, num, mtx, enths, perm_c, perm_r, 2048);
+        calc_differential(clenv, num, mtx0, mtx1, enths, perm_c, perm_r, 2048);
     } catch (const cl::Error& e) {
         std::stringstream msg;
         msg << "CL Error : " << e.what() << " " << e.err();
