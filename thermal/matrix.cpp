@@ -46,6 +46,7 @@ matrix_reorder_CuthillMckee(SparseMatrix_t & dst_mtx, SparseMatrix_t & src_mtx, 
 {
     int nrow = src_mtx.m_rowptr.size( ) - 1;
     std::vector<bool> visited(nrow, false);
+	std::vector<int> perm_tmp(nrow);
     std::vector<int> degs(nrow);
     std::vector<int> vtxs[2];
 	custom_comp_t cmp_deg(degs);
@@ -62,8 +63,7 @@ matrix_reorder_CuthillMckee(SparseMatrix_t & dst_mtx, SparseMatrix_t & src_mtx, 
 
     while (vtxs[f].size( ) > 0) {
 		for (const auto& v : vtxs[f]) {
-			perm_fwd[cur_idx] = v;
-			perm_rev[v] = cur_idx;
+			perm_tmp[cur_idx] = v;
 			cur_idx += 1;
 
 			for (int i=src_mtx.m_rowptr[v]; i < src_mtx.m_rowptr[v+1]; i+=1) {
@@ -80,6 +80,13 @@ matrix_reorder_CuthillMckee(SparseMatrix_t & dst_mtx, SparseMatrix_t & src_mtx, 
 		f = b;
 		b = 1 - f;
     }
+
+	for (int i=0; i<nrow; i+=1) {
+		int j = nrow - i - 1;
+		int v = perm_tmp[j];
+		perm_fwd[i] = v;
+		perm_rev[v] = i;
+	}
 
 	for (int i=0; i<nrow; i+=1) {
 		int v = perm_fwd[i];

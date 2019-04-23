@@ -42,6 +42,59 @@ struct custom_comp_t {
 }
 
 void
+split_matrix(SparseMatrix_t & dst_mtx0, SparseMatrix_t & dst_mtx1, SparseMatrix_t & src_mtx)
+{
+	int nrow = src_mtx.m_rowptr.size( ) - 1;
+	std::vector<int> rem_idxs0;
+	std::vector<int> rem_idxs1;
+
+	dst_mtx0.cur_idx = 0;
+	dst_mtx0.cur_row = 0;
+	for (int i=0; i<nrow/2; i+=1) {
+		dst_mtx0.m_rowptr[i] = src_mtx.m_rowptr[i];
+		for (int j=src_mtx.m_rowptr[i]; j<src_mtx.m_rowptr[i+1]; j+=1) {
+			int idx = src_mtx.m_idxs[j];
+			if (idx >= nrow/2) {
+				if (idx < dst_mtx0.border_min) {
+					dst_mtx0.border_min = idx;
+				}
+				if (idx > dst_mtx0.border_max) {
+					dst_mtx0.border_max = idx;
+				}
+			}
+
+			dst_mtx0.m_idxs[j]  = idx;
+			dst_mtx0.m_elems[j] = src_mtx.m_elems[j];
+		}
+	}
+	dst_mtx0.m_rowptr[nrow/2] = src_mtx.m_rowptr[nrow/2];
+
+	int row_offs = nrow/2;
+	int idx_offs = src_mtx.m_rowptr[row_offs];
+	dst_mtx1.cur_idx = 0;
+	dst_mtx1.cur_row = 0;
+	for (int i=row_offs; i<nrow; i+=1) {
+		dst_mtx1.m_rowptr[i - row_offs] = src_mtx.m_rowptr[i] - idx_offs;
+		for (int j=src_mtx.m_rowptr[i]; j<src_mtx.m_rowptr[i+1]; j+=1) {
+			int idx = src_mtx.m_idxs[j];
+			if (idx < row_offs) {
+				if (idx < dst_mtx1.border_min) {
+					dst_mtx1.border_min = idx;
+				}
+				if (idx > dst_mtx1.border_max) {
+					dst_mtx1.border_max = idx;
+				}
+			}
+
+			dst_mtx1.m_idxs[j - idx_offs] = idx;
+			dst_mtx1.m_elems[j - idx_offs] = src_mtx.m_elems[j];
+		}
+	}
+	dst_mtx0.m_rowptr[nrow - row_offs] = src_mtx.m_rowptr[nrow] - idx_offs;
+
+}
+
+void
 matrix_reorder_CuthillMckee(SparseMatrix_t & dst_mtx, SparseMatrix_t & src_mtx, std::vector<int> & perm_fwd, std::vector<int> & perm_rev)
 {
     int nrow = src_mtx.m_rowptr.size( ) - 1;
