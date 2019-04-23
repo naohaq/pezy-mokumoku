@@ -35,4 +35,9 @@ pzcl.log
 thermal/pzcThermal
 thermal/kernel/kernel.pz
 thermal/kernel/obj/
+thermal/result/*.pnm
 
+thermal_md/pzcThermal
+thermal_md/kernel/kernel.pz
+thermal_md/kernel/obj/
+thermal_md/result/*.pnm
