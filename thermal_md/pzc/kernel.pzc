@@ -160,47 +160,24 @@ void pzc_calcDiffuse(size_t        num,
     size_t       gid    = pid * get_maxtid() + tid;
     const size_t GLOBAL_WORK_SIZE = get_maxtid() * get_maxpid();
 
-    void *   local_mem = (void*)get_local_mem_addr();
-    FLOAT_t * local_dst0 = ((FLOAT_t*)local_mem) + tid;
-    FLOAT_t * local_dst1 = ((FLOAT_t*)local_mem) + tid * get_maxtid( );
-
-    for (size_t i = pid * get_maxtid( ); i < num; i += GLOBAL_WORK_SIZE) {
-        int cur_row = i;
-        int cur_idx = rowptr[cur_row] + tid;
-        int row_ofs;
-
-        for (size_t j = 0; j < get_maxtid( ); j += 1) {
-            local_dst1[j] = 0.0;
-            chgthread( );
-        }
-        sync_pe( );
-
-        cur_row = get_current_row(num, rowptr, cur_row, cur_idx);
-        row_ofs = cur_row - i;
+    for (size_t i = gid; i < num; i += GLOBAL_WORK_SIZE) {
+        int j_s = rowptr[i];
+        int j_e = rowptr[i+1];
         chgthread( );
-        while (cur_row < num && cur_row < i + get_maxtid( )) {
-            int c = idxs[cur_idx];
-            FLOAT_t e = elems[cur_idx];
+        FLOAT_t sum = 0.0;
+
+        for (int j = j_s; j < j_e; j += 1) {
+            int c = idxs[j];
+            FLOAT_t e = elems[j];
             chgthread( );
             FLOAT_t v = temps[c];
             chgthread( );
-            local_dst1[row_ofs] += e * v;
-            chgthread( );
-
-            cur_idx += get_maxtid( );
-            cur_row = get_current_row(num, rowptr, cur_row, cur_idx);
-            row_ofs = cur_row - i;
-            chgthread( );
+            sum += e*v;
         }
-        sync_pe( );
 
-        FLOAT_t sum = 0.0;
-        for (int j = 0; j < get_maxtid( ); j += 1) {
-            sum += local_dst0[j*get_maxtid( )];
-            chgthread( );
-        }
-        enths[i + offs + tid] += sum;
-        sync_pe( );
+        FLOAT_t u = enths[i + offs];
+        enths[i + offs] = u + sum;
+        chgthread( );
     }
 
     flush();
