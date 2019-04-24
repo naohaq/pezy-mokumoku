@@ -139,7 +139,6 @@ void calc_differential(CLenv_t & clenv, size_t num, SparseMatrix_t & mtx,
         // Create Kernel.
         // Give kernel name without pzc_ prefix.
         auto kernel0 = cl::Kernel(program, "calcDiffuse");
-        auto kernel1 = cl::Kernel(program, "calcBoundary");
         auto kernel2 = cl::Kernel(program, "enth2temp");
         auto kernel4 = cl::Kernel(program, "extractrgb");
 
