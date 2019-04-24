@@ -147,12 +147,13 @@ get_current_row(int num, const int * rowptr, int row, int idx)
     return row;
 }
 
-void pzc_calcDiffuse(size_t        num,
+void pzc_calcDiffuse(size_t         num,
                      FLOAT_t*       enths,
                      const FLOAT_t* temps,
-                     const int*    rowptr,
-                     const int*    idxs,
-                     const FLOAT_t* elems)
+                     const int*     rowptr,
+                     const int*     idxs,
+                     const FLOAT_t* elems,
+                     const int*     perm_fwd)
 {
     size_t       pid    = get_pid();
     size_t       tid    = get_tid();
@@ -160,6 +161,7 @@ void pzc_calcDiffuse(size_t        num,
     const size_t GLOBAL_WORK_SIZE = get_maxtid() * get_maxpid();
 
     for (size_t i = gid; i < num; i += GLOBAL_WORK_SIZE) {
+        // Matrix - vector multiplication
         int j_s = rowptr[i];
         int j_e = rowptr[i+1];
         chgthread( );
@@ -174,35 +176,25 @@ void pzc_calcDiffuse(size_t        num,
             sum += e*v;
         }
         FLOAT_t u = enths[i];
-        enths[i] = u + sum;
         chgthread( );
-    }
+        u += sum;
 
-    flush();
-}
-
-void pzc_calcBoundary(size_t num, FLOAT_t* enths, int* perm_rev)
-{
-    size_t pid = get_pid( );
-    size_t tid = get_tid( );
-    size_t gid = pid * get_maxtid( ) + tid;
-    const size_t GLOBAL_WORK_SIZE = get_maxtid() * get_maxpid();
-
-    for (size_t i = gid; i < num; i += GLOBAL_WORK_SIZE) {
-        int z = i % NZ;
-        int x = i / NZ;
-
-        if (x >= 96 && x < 160) {
-            int idx = crd2idx(x, NY-1, z);
-            int idx_p = perm_rev[idx];
-            FLOAT_t e = enths[idx_p];
-            chgthread();
-
-            FLOAT_t dTemp = enthalpy_to_temp(e);
-            e += s_ry * (T_low - dTemp) * Cv_SUS304;
-
-            enths[idx_p] = e;
+        // Calculate boundary condition.
+        int x;
+        int y;
+        int z;
+        int ii = perm_fwd[i];
+        chgthread( );
+        idx2crd(ii, x, y, z);
+        if ((y == NY-1) && (x >= 96) && (x < 160)) {
+            FLOAT_t dTemp = temps[i];
+            chgthread( );
+            u += s_ry * (T_low - dTemp) * Cv_SUS304;
         }
+        else {
+            chgthread( );
+        }
+        enths[i] = u;
     }
 
     flush();

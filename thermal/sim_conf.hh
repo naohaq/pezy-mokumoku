@@ -42,6 +42,15 @@ crd2idx(int x, int y, int z)
     return (x * (NY*NZ) + y*NZ + z);
 }
 
+static inline void
+idx2crd(int idx, int & x, int & y, int & z)
+{
+	z = idx % NZ;
+	int tmp = idx / NZ;
+	y = tmp % NY;
+	x = tmp / NY;
+}
+
 #endif /* SIM_CONF_HH_ */
 
 // Local Variables:
