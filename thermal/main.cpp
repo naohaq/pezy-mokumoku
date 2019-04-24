@@ -139,26 +139,17 @@ void calc_differential(CLenv_t & clenv, size_t num, SparseMatrix_t & mtx,
         // Create Kernel.
         // Give kernel name without pzc_ prefix.
         auto kernel0 = cl::Kernel(program, "calcDiffuse");
-        auto kernel2 = cl::Kernel(program, "enth2temp");
-        auto kernel4 = cl::Kernel(program, "extractrgb");
-
-        // Get stack size modify function.
-        typedef CL_API_ENTRY cl_int(CL_API_CALL * pfnPezyExtSetPerThreadStackSize)(cl_kernel kernel, size_t size);
-        const auto clExtSetPerThreadStackSize = reinterpret_cast<pfnPezyExtSetPerThreadStackSize>(clGetExtensionFunctionAddress("pezy_set_per_thread_stack_size"));
-        if (clExtSetPerThreadStackSize == nullptr) {
-            throw "pezy_set_per_thread_stack_size not found";
-        }
-        size_t stack_size_per_thread = 1024;
-        clExtSetPerThreadStackSize(kernel0(), stack_size_per_thread);
+        auto kernel1 = cl::Kernel(program, "enth2temp");
+        auto kernel2 = cl::Kernel(program, "extractrgb");
 
         // Create Buffers.
-        auto device_rowptr   = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(int) * (num+1));
-        auto device_idxs     = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(int) * num * 8);
-        auto device_rows     = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(FLOAT_t) * num * 8);
+        auto device_rowptr   = cl::Buffer(context, CL_MEM_READ_ONLY, sizeof(int) * (num+1));
+        auto device_idxs     = cl::Buffer(context, CL_MEM_READ_ONLY, sizeof(int) * num * 8);
+        auto device_rows     = cl::Buffer(context, CL_MEM_READ_ONLY, sizeof(FLOAT_t) * num * 8);
         auto device_enths    = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(FLOAT_t) * num);
         auto device_temps    = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(FLOAT_t) * num);
-        auto device_perm_fwd = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(int) * num);
-        auto device_perm_rev = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(int) * num);
+        auto device_perm_fwd = cl::Buffer(context, CL_MEM_READ_ONLY, sizeof(int) * num);
+        auto device_perm_rev = cl::Buffer(context, CL_MEM_READ_ONLY, sizeof(int) * num);
         auto device_pixels   = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(uint8_t) * NX * NY * 3);
 
         // Send src.
@@ -178,15 +169,15 @@ void calc_differential(CLenv_t & clenv, size_t num, SparseMatrix_t & mtx,
         kernel0.setArg(5, device_rows);
         kernel0.setArg(6, device_perm_fwd);
 
-        kernel2.setArg(0, num);
-        kernel2.setArg(1, device_temps);
-        kernel2.setArg(2, device_enths);
+        kernel1.setArg(0, num);
+        kernel1.setArg(1, device_temps);
+        kernel1.setArg(2, device_enths);
 
-        kernel4.setArg(0, (size_t)NX*NY);
-        kernel4.setArg(1, (int)8);
-        kernel4.setArg(2, device_pixels);
-        kernel4.setArg(3, device_enths);
-        kernel4.setArg(4, device_perm_rev);
+        kernel2.setArg(0, (size_t)NX*NY);
+        kernel2.setArg(1, (int)8);
+        kernel2.setArg(2, device_pixels);
+        kernel2.setArg(3, device_enths);
+        kernel2.setArg(4, device_perm_rev);
 
         // Get workitem size.
         // sc1-64: 8192  (1024 PEs * 8 threads)
@@ -210,9 +201,9 @@ void calc_differential(CLenv_t & clenv, size_t num, SparseMatrix_t & mtx,
 
         // Run device kernel.
         // Enthalpy to temperature
-        command_queue.enqueueNDRangeKernel(kernel2, cl::NullRange, cl::NDRange(global_work_size), cl::NullRange, nullptr, nullptr);
+        command_queue.enqueueNDRangeKernel(kernel1, cl::NullRange, cl::NDRange(global_work_size), cl::NullRange, nullptr, nullptr);
         // Convert enthalpy to RGB
-        command_queue.enqueueNDRangeKernel(kernel4, cl::NullRange, cl::NDRange(global_work_size), cl::NullRange, nullptr, nullptr);
+        command_queue.enqueueNDRangeKernel(kernel2, cl::NullRange, cl::NDRange(global_work_size), cl::NullRange, nullptr, nullptr);
         // Get temperature map as an image.
         command_queue.enqueueReadBuffer(device_pixels, true, 0, sizeof(uint8_t) * NX*NY*3, &pixels[0]);
 
@@ -222,11 +213,11 @@ void calc_differential(CLenv_t & clenv, size_t num, SparseMatrix_t & mtx,
                 command_queue.enqueueNDRangeKernel(kernel0, cl::NullRange, cl::NDRange(global_work_size), cl::NullRange, nullptr, nullptr);
 
                 // Enthalpy to temperature
-                command_queue.enqueueNDRangeKernel(kernel2, cl::NullRange, cl::NDRange(global_work_size), cl::NullRange, nullptr, nullptr);
+                command_queue.enqueueNDRangeKernel(kernel1, cl::NullRange, cl::NDRange(global_work_size), cl::NullRange, nullptr, nullptr);
             }
 
             // Convert enthalpy to RGB
-            command_queue.enqueueNDRangeKernel(kernel4, cl::NullRange, cl::NDRange(global_work_size), cl::NullRange, nullptr, nullptr);
+            command_queue.enqueueNDRangeKernel(kernel2, cl::NullRange, cl::NDRange(global_work_size), cl::NullRange, nullptr, nullptr);
             output_temperature(k, pixels);
 
             // Get temperature map as an image.
@@ -269,6 +260,8 @@ int main(int argc, char** argv)
 
     auto mtx = SparseMatrix_t(rowptr, idxs, rows);
 
+    double t0 = gettime( );
+
     {
         std::vector<int> tmp_rowptr(num+1);
         std::vector<int> tmp_idxs(num*7);
@@ -283,6 +276,7 @@ int main(int argc, char** argv)
     init_state(enths);
 
     double t1 = gettime( );
+    std::cout << "Elapsed time: " << (t1 - t0) << " sec." << std::endl;
 
     // run device add
     try {

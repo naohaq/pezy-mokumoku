@@ -137,16 +137,6 @@ enth2rgb(FLOAT_t u, uchar & r, uchar & g, uchar & b)
     b = (uchar)(((int)b_tmp * s) >> 8);
 }
 
-
-inline int
-get_current_row(int num, const int * rowptr, int row, int idx)
-{
-    while (row < num && rowptr[row+1] <= idx) {
-        row += 1;
-    }
-    return row;
-}
-
 void pzc_calcDiffuse(size_t         num,
                      FLOAT_t*       enths,
                      const FLOAT_t* temps,
@@ -195,23 +185,7 @@ void pzc_calcDiffuse(size_t         num,
             chgthread( );
         }
         enths[i] = u;
-    }
-
-    flush();
-}
-
-void pzc_reorder(size_t num, FLOAT_t* dst, FLOAT_t* src, int* perm)
-{
-    size_t pid = get_pid( );
-    size_t tid = get_tid( );
-    size_t gid = pid * get_maxtid( ) + tid;
-    const size_t GLOBAL_WORK_SIZE = get_maxtid() * get_maxpid();
-
-    for (size_t i = gid; i < num; i += GLOBAL_WORK_SIZE) {
-        int k = perm[i];
-        FLOAT_t v = src[i];
-        dst[k] = v;
-        chgthread();
+        chgthread( );
     }
 
     flush();
@@ -227,7 +201,11 @@ void pzc_enth2temp(size_t        num,
     const size_t GLOBAL_WORK_SIZE = get_maxtid() * get_maxpid();
 
     for (size_t i = gid; i < num; i += GLOBAL_WORK_SIZE) {
-        temps[i] = enthalpy_to_temp(enths[i]);
+        FLOAT_t e = enths[i];
+        chgthread();
+        FLOAT_t t = enthalpy_to_temp(e); 
+        temps[i] = t;
+        chgthread();
     }
 
     flush();
